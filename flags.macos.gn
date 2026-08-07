@@ -13,3 +13,7 @@ is_official_build=true
 proprietary_codecs=true
 symbol_level=1
 use_sysroot=false
+# fork: PCH breaks with clang-23 + MacOSX26.5.sdk ("missing 'export module'
+# declaration in module interface unit" on build/precompile.h); build-speed
+# only knob, no functional difference.
+enable_precompiled_headers=false
