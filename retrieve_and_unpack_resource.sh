@@ -71,5 +71,12 @@ if $retrieve_toolchain; then
     NODE="$_src_dir/third_party/node"
     mkdir -p "$NODE/mac_arm64"
     mv "$NODE/mac/node-darwin-arm64" "$NODE/mac_arm64/"
+
+    # Remote builds also need Linux Clang.
+    if [ -n "${SISO_REAPI_ADDRESS:-}" ]; then
+      python3 "$_src_dir/tools/clang/scripts/update.py" \
+        --host-os=linux \
+        --output-dir="$_src_dir/third_party/llvm-build/Release+Asserts_linux"
+    fi
   popd
 fi

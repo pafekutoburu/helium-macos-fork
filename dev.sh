@@ -2,81 +2,8 @@
 
 _root_dir=$(dirname $(greadlink -f $0))
 
-source "$_root_dir/env.sh"
+source "$_root_dir/devutils/shared.sh"
 source "$_root_dir/devutils/set_quilt_vars.sh"
-
-___helium_setup_siso() {
-    if [ -x "$_siso_path" ]; then
-        return
-    fi
-
-    local siso_arch="mac-arm64"
-    if [[ $_arch == "x86_64" ]]; then
-        siso_arch="mac-amd64"
-    fi
-
-    local siso_package="build/siso/$siso_arch"
-
-    local siso_version=$(sed -n "s/.*'siso_version': '\([^']*\)'.*/\1/p" "$_src_dir/DEPS" | head -1)
-    if [ -z "$siso_version" ]; then
-        echo "error: couldn't find siso_version in DEPS" >&2
-        return 1
-    fi
-
-    mkdir -p "$_siso_dir"
-    printf '%s\n' "$siso_package $siso_version" |
-        "$_depot_tools_dir/cipd" ensure --root "$_siso_dir" --ensure-file -
-}
-
-___helium_configure_remoteexec() {
-    if [ -z "${SISO_REAPI_ADDRESS:-}" ]; then
-        return 0
-    fi
-
-    export SISO_REAPI_INSTANCE="${SISO_REAPI_INSTANCE:-main}"
-    export RBE_service_no_security=true
-
-    python3 "$_src_dir/build/config/siso/configure_siso.py" \
-        --reapi_address="$SISO_REAPI_ADDRESS" \
-        --reapi_instance="$SISO_REAPI_INSTANCE" \
-        --reapi_backend_config_path=nativelink.star
-}
-
-___helium_setup_remoteexec_toolchain() {
-    if [ -z "${SISO_REAPI_ADDRESS:-}" ]; then
-        return 0
-    fi
-
-    python3 "$_src_dir/tools/clang/scripts/update.py" \
-        --host-os=linux \
-        --output-dir="$_src_dir/third_party/llvm-build/Release+Asserts_linux"
-}
-
-___helium_setup_gn() {
-    local OUT_FILE="$_out_dir/args.gn"
-    cat "$_main_repo/flags.gn" "$_root_dir/flags.macos.gn" > "$OUT_FILE"
-
-    if [ -n "${SISO_REAPI_ADDRESS:-}" ]; then
-        echo 'use_remoteexec = true' >> "$OUT_FILE"
-    elif command -v sccache 2>&1 >/dev/null; then
-        echo 'cc_wrapper="sccache"' >> "$OUT_FILE"
-    elif command -v ccache 2>&1 >/dev/null; then
-        echo 'cc_wrapper="env CCACHE_COMPILERCHECK=content CCACHE_SLOPPINESS=time_macros ccache"' >> "$OUT_FILE"
-    else
-        echo 'warn: sccache or ccache is not available' >&2
-    fi
-
-    local TARGET_CPU="arm64"
-    if [[ $_arch == "x86_64" ]]; then
-        TARGET_CPU="x64"
-    fi
-
-    echo 'target_cpu = "'"$TARGET_CPU"'"' >> "$OUT_FILE"
-    echo 'devtools_skip_typecheck = false' >> "$OUT_FILE"
-    echo 'use_siso = true' >> "$OUT_FILE"
-
-    sed -i '' s/is_official_build/is_component_build/ "$OUT_FILE"
-}
 
 ___helium_info_pull() {
     # fall back to git clone if tarball is unavailable
@@ -89,21 +16,13 @@ ___helium_info_pull() {
 
 ___helium_configure() {
     cd "$_src_dir"
-    ___helium_setup_siso
-    ___helium_setup_remoteexec_toolchain
-    "$_root_dir/devutils/setup_dawn_go.sh" "$_src_dir" "$_depot_tools_dir" "$_arch"
-    python3 ./tools/gn/bootstrap/bootstrap.py -o "$_out_dir/gn" --skip-generate-buildfiles
-    "$_out_dir/gn" gen "$_out_dir" --fail-on-unused-args --export-compile-commands
+    ___helium_install_cipd_deps
+    ___helium_configure_siso
+    "$_gn_path" gen "$_out_dir" --fail-on-unused-args --export-compile-commands
 }
 
 ___helium_toolchain() {
     "$_root_dir/retrieve_and_unpack_resource.sh" -t
-}
-
-___helium_resources() {
-    python3 "$_main_repo/utils/generate_resources.py" "$_main_repo/resources/generate_resources.txt" "$_main_repo/resources"
-    python3 "$_main_repo/utils/replace_resources.py" "$_root_dir/resources/platform_resources.txt" "$_root_dir/resources" "$_src_dir"
-    python3 "$_main_repo/utils/replace_resources.py" "$_main_repo/resources/helium_resources.txt" "$_main_repo/resources" "$_src_dir"
 }
 
 ___helium_setup_presetup() {
@@ -117,8 +36,8 @@ ___helium_setup_presetup() {
     ___helium_info_pull
     python3 "$_main_repo/utils/prune_binaries.py" "$_src_dir" "$_main_repo/pruning.list"
     ___helium_toolchain
-    ___helium_resources
-    ___helium_setup_gn
+    helium_resources
+    write_gn_args "$_arch" dev false
 
     python3 "$_main_repo/utils/helium_version.py" \
         --tree "$_main_repo" \
@@ -201,9 +120,11 @@ ___helium_substitution() {
 
 ___helium_build() {
     cd "$_src_dir"
-    ___helium_configure_remoteexec
-    SISO_PATH="$_siso_path" python3 "$_depot_tools_dir/autoninja.py" \
-    -k 0 -C "$_out_dir" chrome chromedriver
+    if [ -n "${SISO_REAPI_ADDRESS:-}" ]; then
+        ___helium_configure_siso || return
+        export RBE_service_no_security=true
+    fi
+    helium_build -k 0
 }
 
 ___helium_run() {
@@ -326,7 +247,7 @@ __helium_menu() {
         setup) ___helium_setup;;
         presetup) ___helium_setup_presetup;;
         configure) ___helium_configure;;
-        resources) ___helium_resources;;
+        resources) helium_resources;;
 
         sub|unsub) ___helium_substitution "$1";;
         namesub|nameunsub) ___helium_name_substitution "$1";;
