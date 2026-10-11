@@ -549,7 +549,7 @@
    }
    // helium-fork: a hover grace timer can fire while the toggle choreography
 @@ -2906,6 +2906,13 @@ void BrowserView::FullscreenStateChangin
-     return;
+     EndArcComposerEdit();
    }
  
 +#if BUILDFLAG(IS_MAC)
