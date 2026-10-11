@@ -255,8 +255,8 @@
 --- a/chrome/browser/ui/BUILD.gn
 +++ b/chrome/browser/ui/BUILD.gn
 @@ -2344,6 +2344,8 @@ static_library("ui") {
-       "views/frame/immersive_mode_overlay_views_mac.h",
-       "views/frame/immersive_mode_overlay_views_mac.mm",
+       "views/frame/space_swipe_monitor_mac.mm",
+       "views/frame/helium_sf_symbol_image_mac.mm",
        "views/helium/frame_corner_radius_mac.mm",
 +      "views/helium/fullscreen_window_controls_mac.h",
 +      "views/helium/fullscreen_window_controls_mac.mm",
@@ -508,43 +508,46 @@
 --- a/chrome/browser/ui/views/frame/browser_view.h
 +++ b/chrome/browser/ui/views/frame/browser_view.h
 @@ -1489,6 +1489,8 @@ class BrowserView : public BrowserWindow
-   base::OneShotTimer zen_cursor_exit_timer_;
+   bool floating_sidebar_reveal_delay_elapsed_ = false;
    std::optional<gfx::Point> zen_last_cursor_;
    bool zen_mode_enabled_ = false;
 +  // Ignore hover changes during native macOS fullscreen transitions.
 +  bool zen_reveal_paused_ = false;
  
-   mutable base::WeakPtrFactory<BrowserView> weak_ptr_factory_{this};
- };
+   // helium-fork: collapse-state subscription driving the hidden sidebar mode.
+   base::CallbackListSubscription sidebar_collapse_subscription_;
 --- a/chrome/browser/ui/views/frame/browser_view.cc
 +++ b/chrome/browser/ui/views/frame/browser_view.cc
-@@ -1945,7 +1945,7 @@ void BrowserView::UpdateZenModeEventMoni
+@@ -1945,6 +1945,9 @@ void BrowserView::UpdateZenModeEventMoni
  }
  
  void BrowserView::StartZenCollapseTimer(base::TimeDelta delay) {
--  if (zen_cursor_exit_timer_.IsRunning()) {
-+  if (zen_reveal_paused_ || zen_cursor_exit_timer_.IsRunning()) {
-     return;
-   }
-   zen_cursor_exit_timer_.Start(
-@@ -1974,7 +1974,7 @@ bool BrowserView::IsLeavingZenSideGap(co
++  if (zen_reveal_paused_) {
++    return;
++  }
+   // helium-fork: earliest deadline wins. A pending window-exit grace (seconds)
+   // must not swallow a later hover-exit request (milliseconds): the pointer
+   // that left the window and came back onto the page would otherwise keep
+@@ -1974,7 +1974,8 @@ bool BrowserView::IsLeavingZenSideGap(co
  }
  
  void BrowserView::UpdateZenModeRevealFromCursor() {
--  if (!zen_mode_enabled_) {
-+  if (!zen_mode_enabled_ || zen_reveal_paused_) {
+-  if (!zen_mode_enabled_ && !IsSidebarHiddenModeActive()) {
++  if ((!zen_mode_enabled_ && !IsSidebarHiddenModeActive()) ||
++      zen_reveal_paused_) {
      return;
    }
- 
-@@ -2020,7 +2020,7 @@ void BrowserView::UpdateZenModeRevealFro
+   // helium-fork: the toggle choreography owns the slide animation while it
+@@ -2020,7 +2020,8 @@ void BrowserView::UpdateZenModeRevealFro
  }
  
  void BrowserView::UpdateZenModeReveal(bool reveal_top, bool reveal_side) {
--  if (!zen_mode_enabled_) {
-+  if (!zen_mode_enabled_ || zen_reveal_paused_) {
+-  if (!zen_mode_enabled_ && !IsSidebarHiddenModeActive()) {
++  if ((!zen_mode_enabled_ && !IsSidebarHiddenModeActive()) ||
++      zen_reveal_paused_) {
      return;
    }
- 
+   // helium-fork: a hover grace timer can fire while the toggle choreography
 @@ -2906,6 +2906,13 @@ void BrowserView::FullscreenStateChangin
      return;
    }
@@ -580,13 +583,19 @@
    multi_contents_view_->OnFullscreenStateChanged();
  
    if (base::FeatureList::IsEnabled(features::kAsyncFullscreenWindowState)) {
-@@ -2974,6 +2986,10 @@ void BrowserView::FullscreenStateChanged
+@@ -2974,6 +2986,16 @@ void BrowserView::FullscreenStateChanged
      }
    }
  
 +#if BUILDFLAG(IS_MAC)
 +  zen_reveal_paused_ = false;
 +  zen_last_cursor_.reset();
++  // helium-fork: the hidden sidebar is paused as well (the guards above),
++  // but UpdateZenModeState() re-reads the cursor for zen mode only -- a
++  // sidebar hovered out when the transition began would stay out.
++  if (IsSidebarHiddenModeActive()) {
++    UpdateZenModeRevealFromCursor();
++  }
 +#endif
    UpdateZenModeState();
  }
